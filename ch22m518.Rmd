@@ -1,6 +1,6 @@
 ---
 title: "ch22m518-project"
-author: "Husain Dehnuwala - ch22m518"
+author: "Husain Dehnuwala"
 output:
   word_document: default
   html_document: default
