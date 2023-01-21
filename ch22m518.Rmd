@@ -1,0 +1,247 @@
+---
+title: "ch22m518-project"
+author: "Husain Dehnuwala - ch22m518"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, fig.width=10, fig.height=4}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, fig.width=10, fig.height=4}
+library(lubridate)
+library(padr)
+library(imputeTS)
+library(AnalyzeTS)
+library(forecast)
+library(Metrics)
+```
+
+#### 1. Removing first four rows.
+##### The first four columns of data are irrelevant since they do not represent any measurable quantity, we will remove them. This is because they simply convey information of the sensors, but not the sensor readings.
+
+```{r fig.width=10, fig.height=4}
+path = 'D:/Education/IITM/1 Trimester/Applied Time Series Analysis/Project/SHAR_MAY15_JULY7.csv'
+#Load entire data in a data frame
+data = data.frame(read.csv(path))
+#Remove first 4 column from the imported data and keep only remaining data for analysis
+weather_readings = data[,5:16]
+plot(as.ts(weather_readings$HUMIDITY...))
+```
+
+#### 2. Identifying the missing data and filling it with 'NA'
+
+```{r fig.width=10, fig.height=4}
+weather_readings$Concat_Date_Time_IST= mdy_hm(paste(weather_readings$DATE.IST., weather_readings$TIME.IST.))
+#Filling the missing data with NA
+weather_readings_NA = pad(weather_readings, interval = "hour" , by="Concat_Date_Time_IST")
+# We plot the data here to see the effect of added NA values
+plot(as.ts(weather_readings_NA$HUMIDITY...))
+```
+
+##### We can observe empty blocks in the graph representing the empty values
+#### 3. Filling the missing data (NA) using interpolation.
+##### Interpolation is a process of determining the unknown values that lie in between the known data points.
+```{r warning=FALSE, fig.width=10, fig.height=4}
+interpolated_data = na_interpolation(weather_readings_NA)
+# Segregation of testing and training data leaving 96 values for test.
+training_data = interpolated_data[1:1200,1:13]
+test_data = interpolated_data[1201:1296,1:13]
+```
+
+#### 4. Creating Time Series objects for RH and temperature variables, respectively
+```{r fig.width=10, fig.height=4}
+humid_train_ts = as.ts(training_data$HUMIDITY...)
+temp_train_ts = as.ts(training_data$AIR_TEMP..C.)
+humid_test_ts = as.ts(test_data$HUMIDITY...)
+temp_test_ts = as.ts(test_data$AIR_TEMP..C.)
+plot(humid_train_ts)
+plot(temp_train_ts)
+```
+
+##### Notice that the ecmpty blocks observed in data after step 2 disappear since we have added values using interpolation.
+
+#### 5. Build Fuzzy Time Series model M1.
+```{r message=FALSE, warning=FALSE, fig.width=10, fig.height=4}
+# Singh model
+m1_singh=fuzzy.ts1 ( humid_train_ts, n=5, type="Singh", plot=TRUE)
+#m1_singh_for=m1_singh$forecast
+#Metrics::rmse(humid_test_ts, as.vector(m1_singh_for))
+
+#Abbasov Mamedova model
+m1_abma=fuzzy.ts2 ( humid_train_ts ,n=5,w=5,C=0.01,forecast=96,plot=TRUE,type="Abbasov-Mamedova", trace=FALSE)
+m1_abma_for=m1_abma$forecast
+Metrics::rmse(humid_test_ts, as.vector(m1_abma_for))
+
+#NFTS model
+m1_nfts=fuzzy.ts2 ( humid_train_ts,n=5,w=5,C=0.01,forecast=96,plot=TRUE,type="NFTS", trace=FALSE)
+m1_nfts_for=m1_nfts$forecast
+Metrics::rmse(humid_test_ts, as.vector(m1_nfts_for))
+```
+
+##### Accuracy for Singh
+```
+        ME   MAE    MPE  MAPE    MSE  RMSE         U
+Singh 0.048 2.694 -0.168 4.384 11.637 3.411 0.5011703
+```
+
+##### Accuracy for Abbasov Mamedova model
+```
+                    ME   MAE    MPE  MAPE    MSE  RMSE         U
+Abbasov.Mamedova -0.503 4.452 -1.435 7.401 45.446 6.741 0.9920568
+```
+
+##### accuracy for NFTS
+```
+        ME   MAE    MPE  MAPE  MSE  RMSE          U
+NFTS -0.499 0.525 -0.747 0.799 0.37 0.608 0.08955515
+```
+
+##### We find the best RMSE for NFTS fuzzy model from AnalyzeTS package-  0.608 on the training data.
+##### However, for testing data, we get approximately same RMSE for all M1 models, i.e. 31. The forecast metrics are added above for reference, we conclude that NFTS is the best fuzzy model from AnalyzeTS package.
+
+#### 6. SARIMA model with temperature as the exogenous input to RH
+```{r fig.width=10, fig.height=4}
+temp_humid_ts = as.ts(interpolated_data[c(5, 9)])
+
+par(mfrow=c(1,1), mai = c(0.8,1,0.6,0.2))
+acf(humid_train_ts,lag.max=100)
+pacf(humid_train_ts,lag.max=100)
+periodogram(humid_train_ts,ylab="Periodogram",xlab="Frequency (cycles/sample)")
+```
+
+##### Depicted frequencey is 24 as per the periodogram.
+```{r fig.width=10, fig.height=4}
+decomposed_data <- decompose(ts(humid_train_ts, frequency=24))
+plot(decomposed_data)
+```
+
+##### Trying out several ARIMA models to test which one fits best
+```{r fig.width=10, fig.height=4}
+AICVal <- function(modarima,Lmax=30) {
+  summary(modarima)
+  return(modarima$aic)
+}
+mytsdiag <- function(modarima,Lmax=30) {
+  summary(modarima)
+  err_mod <- modarima$residuals
+  N = length(err_mod)
+  par(mfrow=c(3,1), mai = c(0.6,0.7,0.2,0.2))
+  plot(scale(err_mod),type='l',ylab="Std. resid.",xlab="")
+  acf_err <- acf(err_mod,lag.max=Lmax,main="",plot=F)
+  lowsig = -1.96/sqrt(N); upsig = 1.96/sqrt(N)
+  plot(acf_err$lag*tsp(err_mod)[3],acf_err$acf,type='h',main="",ylab="ACF of Resid",xlab="",ylim=c(1.2*lowsig,1.2*upsig))
+  abline(h=upsig,col="red",lty="dashed")
+  abline(h=lowsig,col="red",lty="dashed")
+  abline(h=0,col="black")
+  blpval <- NULL
+  npar <- sum(modarima$arma[1:4])
+  Lval <- (npar+1):Lmax
+  for (L in Lval) {
+    blpval <- c(blpval,Box.test(modarima$residuals,lag=L,fitdf=npar)$p.value)
+  }
+  # Plot BLP statistic
+  plot(1:Lmax,c(rep(NA,npar),blpval),ylab="p-values",xlab="Lag",ylim=c(0,1))
+  abline(h=0.05,col='red',lty="dashed")
+}
+arima_model_1 <- forecast::Arima(humid_train_ts,order=c(2,2,0),seasonal=list(order=c(2,2,0), period=24), xreg = temp_train_ts)
+AIC1=AICVal(arima_model_1)
+arima_model_2 <- forecast::Arima(humid_train_ts,order=c(3,2,0),seasonal=list(order=c(3,2,0), period=24),xreg = temp_train_ts)
+AIC2=AICVal(arima_model_2)
+arima_model_3 <- forecast::Arima(humid_train_ts,order=c(1,0,0),seasonal=list(order=c(1,0,1), period=24),xreg = temp_train_ts)
+AIC3=AICVal(arima_model_3)
+arima_model_4 <- forecast::Arima(humid_train_ts,order=c(1,0,1),seasonal=list(order=c(1,0,0), period=24),xreg = temp_train_ts)
+AIC4=AICVal(arima_model_4)
+
+print('AIC value and diagnostics for different order SARIMA model')
+print(AIC1)
+mytsdiag(arima_model_1)
+print(AIC2)
+mytsdiag(arima_model_2)
+print(AIC3)
+mytsdiag(arima_model_3)
+print(AIC4)
+mytsdiag(arima_model_4)
+```
+
+##### We will find confidence intervals and look for significant coefficients for the two models that are successful above, based on p-value.
+```{r fig.width=10, fig.height=4}
+print('SARIMA(1,0,0)(1,0,1)')
+arima_model_3$coef
+confint(arima_model_3)
+print('SARIMA(1,0,1)(1,0,0)')
+arima_model_4$coef
+confint(arima_model_4)
+```
+
+##### As per the p-value, confidence interval, and significance of coefficients, SARIMA (1,0,0)(1,0,1) is a better model. Hence we finalise M2 as below.
+
+```{r fig.width=10, fig.height=4}
+m2=forecast::Arima(humid_train_ts,order=c(1,0,0),seasonal=list(order=c(1,0,1), period=24),xreg = temp_train_ts)
+```
+
+#### 7. Compare m1* and m2 to conclude which model is better - SARIMA or analyzeTS.
+```{r}
+humid_forecast_m2 <- predict(m2,newxreg = temp_test_ts, n.ahead = 96)
+Metrics::rmse(humid_test_ts[1:95], humid_forecast_m2$pred[1:95])
+
+plot(humid_test_ts,ylab="Humidity",main="Prediction Vs Actual Data - SARIMA")
+lines(ts(humid_forecast_m2$pred),col='red')
+```
+##### We receive an RMSE value of 7.353004 using SARIMA model.
+##### To summarize - Best RMSE value using AnalyzeTS (NFTS) on training data is `0.608`, but the same model gives `RMSE value > 31` on the test dataset. In comparison, `RMSE 7.353004` is much more tempting for SARIMA (1,0,0)(1,0,1).
+
+#### 8. Replace imputed values from step 3 by the values that we predict from SARIMA model.
+```{r fig.width=10, fig.height=4}
+humid_with_NA=as.ts(weather_readings_NA$HUMIDITY)
+humid_all_pred<- predict(m2,newxreg = interpolated_data$AIR_TEMP..C. , n.ahead = 1296)
+my_range <- 1:1296
+for(i in my_range) {                                    
+  if(is.na( humid_with_NA[i] ))
+  {
+    humid_with_NA[i]<-humid_all_pred$pred[i]
+  }
+}
+sarima_predicted_humid_values <- humid_with_NA
+```
+
+##### Now we will rebuild the SARIMA model to see if we get better results.
+```{r fig.width=10, fig.height=4}
+humid_train_data_retrain = sarima_predicted_humid_values[1:1200]
+humid_test_data_retrain = sarima_predicted_humid_values[1201:1296]
+
+arima_rebuild_model_1 <- forecast::Arima(humid_train_data_retrain,order=c(1,0,1),seasonal=list(order=c(1,0,1), period=24),xreg = temp_train_ts)
+AIC1=AICVal(arima_rebuild_model_1)
+mytsdiag(arima_rebuild_model_1)
+
+arima_rebuild_model_2 <- forecast::Arima(humid_train_data_retrain,order=c(1,0,0),seasonal=list(order=c(1,0,1), period=24),xreg = temp_train_ts)
+AIC2=AICVal(arima_rebuild_model_2)
+mytsdiag(arima_rebuild_model_2)
+
+print('SARIMA(1,0,0)(1,0,1)')
+arima_rebuild_model_2$coef
+confint(arima_rebuild_model_2)
+print('SARIMA(1,0,1)(1,0,0)')
+arima_rebuild_model_1$coef
+confint(arima_rebuild_model_1)
+```
+
+##### Comparing retrained SARIMA (1,0,0) (1,0,1) with the model selected at the end of step 7, i.e. SARIMA (1,0,0)(1,0,1) ,  we find that p-values fit better after retrain. We will also compare the RMSE values -
+
+```{r fig.width=10, fig.height=4}
+humid_retrain_forecast <- predict(arima_rebuild_model_2,newxreg = temp_test_ts, n.ahead = 96)
+Metrics::rmse(humid_test_ts[1:95], humid_retrain_forecast$pred[1:95])
+```
+
+##### RMSE after retrain is `7.795987` and the RMSE after step 7 is `7.353004`.
+##### We notice that even though we have better p-value fit, the RMSE does not significantly get better.
+
+```{r fig.width=10, fig.height=4}
+plot(humid_test_data_retrain,ylab="Humidity",main="Prediction Vs Actual Data - Retrained SARIMA")
+lines(ts(humid_retrain_forecast$pred),col='red')
+```
+
+##### The resulting retrained model and the forecasts appear any significantly different from its predecessor. This can be inferred from the retrained graph showing prediction vs actual data plotted. Also, the SARIMA (1,0,0)(1,0,1) model from retrained data gives significantly better p-values. With this, we conclude that retraining a model is extremely useful device especially when there are many missing values involved. 
